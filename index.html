@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI-тренер продаж · ROI-калькулятор</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <style>
+      body {
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      .glass-card {
+        backdrop-filter: blur(16px);
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+    </style>
+  </head>
+  <body class="min-h-screen">
+    <div id="root" class="min-h-screen"></div>
+    <script type="text/babel">
+      const { useMemo, useState, useEffect, useRef } = React;
+
+      const PRICING = {
+        RUB: [
+          { maxAgents: 10, price: 30000 },
+          { maxAgents: 30, price: 50000 },
+          { maxAgents: 60, price: 80000 },
+          { maxAgents: Infinity, price: 120000 },
+        ],
+        USD: [
+          { maxAgents: 10, price: 500 },
+          { maxAgents: 30, price: 900 },
+          { maxAgents: 60, price: 1300 },
+          { maxAgents: Infinity, price: 1600 },
+        ],
+      };
+
+      const SCENARIOS = {
+        conservative: {
+          label: "Консервативный",
+          reductionRamp: 0.2,
+          upliftEfficiency: 0.02,
+          savedHoursShare: 0.3,
+        },
+        realistic: {
+          label: "Реалистичный",
+          reductionRamp: 0.3,
+          upliftEfficiency: 0.05,
+          savedHoursShare: 0.5,
+        },
+        bold: {
+          label: "Смелый",
+          reductionRamp: 0.4,
+          upliftEfficiency: 0.07,
+          savedHoursShare: 0.6,
+        },
+      };
+
+      const DEFAULTS = {
+        totalAgents: 20,
+        newHiresPerMonth: 3,
+        revenuePerAgentPerMonth: 120000,
+        rampUpCurrent: 2,
+        currency: "RUB",
+        supervisorHourlyRate: { RUB: 1000, USD: 15 },
+        hoursPerNewHire: 5,
+      };
+
+      const formatCompact = (value, currency) => {
+        if (value === null || value === undefined || isNaN(value)) return "—";
+        const formatter = new Intl.NumberFormat("ru-RU", {
+          style: "currency",
+          currency,
+          maximumFractionDigits: 0,
+        });
+        return formatter.format(Math.round(value));
+      };
+
+      const calcServiceCost = (totalAgents, currency) => {
+        const tier = PRICING[currency].find((t) => totalAgents <= t.maxAgents);
+        return tier ? tier.price : 0;
+      };
+
+      const numberInputValue = (value, min = 0) => {
+        if (value === "" || value === null || value === undefined) return min;
+        const numeric = parseFloat(value);
+        if (isNaN(numeric) || numeric < min) return min;
+        return numeric;
+      };
+
+      const ScenarioToggle = ({ value, onChange }) => {
+        return (
+          <div className="flex w-full rounded-full bg-slate-800/70 p-1 text-xs font-semibold text-slate-400">
+            {Object.entries(SCENARIOS).map(([key, scenario]) => {
+              const active = key === value;
+              return (
+                <button
+                  key={key}
+                  onClick={() => onChange(key)}
+                  className={`flex-1 rounded-full px-3 py-1 transition ${
+                    active
+                      ? "bg-sky-500 text-white shadow"
+                      : "hover:bg-slate-700/70"
+                  }`}
+                >
+                  {scenario.label}
+                </button>
+              );
+            })}
+          </div>
+        );
+      };
+
+      const ResultCard = ({
+        currency,
+        roiPercent,
+        totalBenefit,
+        serviceCost,
+        extraRevenueFromRamp,
+        extraRevenueFromUplift,
+        savingsSupervisor,
+        paybackDays,
+        scenarioKey,
+        rampUpWithAI,
+        rampUpCurrent,
+      }) => {
+        const currencyCode = currency;
+        const negativeROI = roiPercent < 0;
+
+        return (
+          <div id="result-card" className="glass-card relative h-full rounded-3xl p-6 md:p-8 shadow-lg">
+            <div className="flex flex-col gap-4">
+              <div>
+                <p className="text-sm uppercase tracking-wide text-sky-400">Результат</p>
+                <h2
+                  className={`text-4xl font-extrabold tracking-tight md:text-5xl ${
+                    negativeROI ? "text-rose-400" : "text-emerald-300"
+                  }`}
+                >
+                  ROI: {Number.isFinite(roiPercent) ? Math.round(roiPercent) : "—"}%
+                </h2>
+                <p className="mt-2 text-lg text-slate-200">
+                  +{formatCompact(totalBenefit, currencyCode)} / мес
+                </p>
+                <p className="text-sm text-slate-400">
+                  Стоимость сервиса: {formatCompact(serviceCost, currencyCode)} / мес
+                </p>
+                {paybackDays !== null && (
+                  <p className="mt-2 text-sm text-slate-400">
+                    Окупаемость ≈ {paybackDays} дн.
+                  </p>
+                )}
+                {negativeROI && (
+                  <div className="mt-3 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">
+                    При текущих вводных сервис не окупается. Нажмите, чтобы получить рекомендации.
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4">
+                  <p className="text-xs uppercase text-slate-400">Ускорение адаптации</p>
+                  <p className="mt-1 text-base font-semibold text-slate-100">
+                    +{formatCompact(extraRevenueFromRamp, currencyCode)}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4">
+                  <p className="text-xs uppercase text-slate-400">Рост эффективности</p>
+                  <p className="mt-1 text-base font-semibold text-slate-100">
+                    +{formatCompact(extraRevenueFromUplift, currencyCode)}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4">
+                  <p className="text-xs uppercase text-slate-400">Экономия времени РОПа</p>
+                  <p className="mt-1 text-base font-semibold text-slate-100">
+                    +{formatCompact(savingsSupervisor, currencyCode)}
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Период расчёта: 1 мес · Сценарий: {SCENARIOS[scenarioKey].label}
+              </p>
+
+              <div className="flex items-start gap-3 rounded-2xl border border-slate-700/80 bg-slate-900/50 p-4 text-xs text-slate-400">
+                <div className="mt-0.5 text-sky-400">ℹ️</div>
+                <div>
+                  <p className="font-semibold text-slate-300">
+                    Новая адаптация: {rampUpWithAI.toFixed(1)} мес (было {rampUpCurrent.toFixed(1)} мес)
+                  </p>
+                  Мы считали: адаптация −{Math.round(SCENARIOS[scenarioKey].reductionRamp * 100)}%, эффективность +{Math.round(SCENARIOS[scenarioKey].upliftEfficiency * 100)}%, обучение −{Math.round(SCENARIOS[scenarioKey].savedHoursShare * 100)}% часов.
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Не сохраняем ваши цифры без согласия. Расчёт ориентировочный.
+              </p>
+            </div>
+          </div>
+        );
+      };
+
+      const LeadFormModal = ({ open, onClose, onSubmit, submitted, formData, setFormData }) => {
+        const modalRef = useRef(null);
+
+        useEffect(() => {
+          const handleKeyDown = (e) => {
+            if (e.key === "Escape") onClose();
+          };
+          if (open) {
+            document.body.style.overflow = "hidden";
+            window.addEventListener("keydown", handleKeyDown);
+          } else {
+            document.body.style.overflow = "";
+            window.removeEventListener("keydown", handleKeyDown);
+          }
+          return () => window.removeEventListener("keydown", handleKeyDown);
+        }, [open, onClose]);
+
+        useEffect(() => {
+          const handleClickOutside = (e) => {
+            if (modalRef.current && !modalRef.current.contains(e.target)) {
+              onClose();
+            }
+          };
+          if (open) {
+            document.addEventListener("mousedown", handleClickOutside);
+            return () => document.removeEventListener("mousedown", handleClickOutside);
+          }
+        }, [open, onClose]);
+
+        if (!open) return null;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/80 p-4 sm:items-center">
+            <div
+              ref={modalRef}
+              className="w-full max-w-lg rounded-3xl bg-slate-900/95 p-6 text-slate-100 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-2xl font-semibold">
+                    {submitted ? "Готово" : "Оставьте контакты"}
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-400">
+                    Мы пришлём детальный расчёт и подскажем, как ускорить окупаемость.
+                  </p>
+                </div>
+                <button
+                  onClick={onClose}
+                  className="rounded-full bg-slate-800/60 p-2 text-slate-300 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {!submitted ? (
+                <form
+                  className="mt-6 flex flex-col gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    onSubmit();
+                  }}
+                >
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-200">Имя *</label>
+                    <input
+                      required
+                      value={formData.name}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                      placeholder="Как к вам обращаться?"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-200">Email *</label>
+                    <input
+                      type="email"
+                      required
+                      value={formData.email}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, email: e.target.value }))}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                      placeholder="name@company.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-200">Телефон (необязательно)</label>
+                    <input
+                      value={formData.phone}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, phone: e.target.value }))}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                      placeholder="+7 (___) ___-__-__"
+                    />
+                  </div>
+                  <label className="flex items-center gap-3 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={formData.wantsDemo}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, wantsDemo: e.target.checked }))}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-sky-500 focus:ring-sky-500"
+                    />
+                    Хочу демо 15 мин
+                  </label>
+
+                  <button
+                    type="submit"
+                    className="mt-2 rounded-2xl bg-sky-500 px-6 py-3 text-base font-semibold text-white shadow-lg shadow-sky-500/30 transition hover:bg-sky-400"
+                  >
+                    Получить расчёт
+                  </button>
+                </form>
+              ) : (
+                <div className="mt-6 flex flex-col gap-4 text-sm text-slate-300">
+                  <p>
+                    Спасибо! Мы свяжемся с вами в ближайшее время. Тем временем можно скачать снимок вашего расчёта.
+                  </p>
+                  <button
+                    onClick={() => {
+                      const card = document.getElementById("result-card");
+                      if (!card) return;
+                      html2canvas(card, { backgroundColor: "#0f172a" }).then((canvas) => {
+                        const link = document.createElement("a");
+                        link.download = "roi-calculator.png";
+                        link.href = canvas.toDataURL();
+                        link.click();
+                      });
+                    }}
+                    className="rounded-2xl border border-sky-400/50 bg-slate-800 px-6 py-3 text-base font-semibold text-sky-200 hover:bg-slate-700"
+                  >
+                    Скачать PNG-снимок расчёта
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      const App = () => {
+        const [totalAgents, setTotalAgents] = useState(DEFAULTS.totalAgents);
+        const [newHiresPerMonth, setNewHiresPerMonth] = useState(DEFAULTS.newHiresPerMonth);
+        const [revenuePerAgentPerMonth, setRevenuePerAgentPerMonth] = useState(DEFAULTS.revenuePerAgentPerMonth);
+        const [rampUpCurrent, setRampUpCurrent] = useState(DEFAULTS.rampUpCurrent);
+        const [currency, setCurrency] = useState(DEFAULTS.currency);
+        const [supervisorHourlyRate, setSupervisorHourlyRate] = useState(DEFAULTS.supervisorHourlyRate[DEFAULTS.currency]);
+        const [hoursPerNewHire, setHoursPerNewHire] = useState(DEFAULTS.hoursPerNewHire);
+        const [showAdvanced, setShowAdvanced] = useState(false);
+        const [scenario, setScenario] = useState("realistic");
+        const [isModalOpen, setIsModalOpen] = useState(false);
+        const [leadSubmitted, setLeadSubmitted] = useState(false);
+        const [formData, setFormData] = useState({
+          name: "",
+          email: "",
+          phone: "",
+          wantsDemo: false,
+        });
+        const hasConfettiFired = useRef(false);
+
+        useEffect(() => {
+          setSupervisorHourlyRate(DEFAULTS.supervisorHourlyRate[currency]);
+        }, [currency]);
+
+        const calculations = useMemo(() => {
+          const { reductionRamp, upliftEfficiency, savedHoursShare } = SCENARIOS[scenario];
+
+          const safeTotalAgents = Math.max(totalAgents, 0);
+          const safeRampUp = Math.max(rampUpCurrent, 0);
+          const safeNewHires = Math.max(newHiresPerMonth, 0);
+          const safeRevenue = Math.max(revenuePerAgentPerMonth, 0);
+          const safeHours = Math.max(hoursPerNewHire, 0);
+          const safeSupervisorRate = Math.max(supervisorHourlyRate, 0);
+
+          const rampUpWithAI = Math.max(safeRampUp * (1 - reductionRamp), 0);
+          const monthsSaved = Math.max(safeRampUp - rampUpWithAI, 0);
+
+          const extraRevenueFromRamp = monthsSaved * safeRevenue * safeNewHires;
+
+          const baseTeamRevenue = safeTotalAgents * safeRevenue;
+          const extraRevenueFromUplift = baseTeamRevenue * upliftEfficiency;
+
+          const savedHours = safeNewHires * safeHours * savedHoursShare;
+          const savingsSupervisor = savedHours * safeSupervisorRate;
+
+          const totalBenefit = extraRevenueFromRamp + extraRevenueFromUplift + savingsSupervisor;
+
+          const serviceCost = safeTotalAgents > 0 ? calcServiceCost(safeTotalAgents, currency) : 0;
+          const roiPercent = serviceCost > 0 ? ((totalBenefit - serviceCost) / serviceCost) * 100 : 0;
+          const paybackDays = totalBenefit > 0 && serviceCost > 0 ? Math.round(30 * (serviceCost / totalBenefit)) : null;
+
+          return {
+            rampUpWithAI,
+            monthsSaved,
+            extraRevenueFromRamp,
+            extraRevenueFromUplift,
+            savingsSupervisor,
+            totalBenefit,
+            serviceCost,
+            roiPercent,
+            paybackDays,
+          };
+        }, [
+          totalAgents,
+          newHiresPerMonth,
+          revenuePerAgentPerMonth,
+          rampUpCurrent,
+          supervisorHourlyRate,
+          hoursPerNewHire,
+          currency,
+          scenario,
+        ]);
+
+        const isCalculationBlocked = totalAgents <= 0;
+
+        useEffect(() => {
+          const shouldCelebrate = !isCalculationBlocked && calculations.roiPercent >= 200;
+          if (shouldCelebrate && !hasConfettiFired.current) {
+            confetti({
+              particleCount: 90,
+              spread: 70,
+              origin: { y: 0.6 },
+              colors: ["#22d3ee", "#0ea5e9", "#a855f7", "#facc15"],
+            });
+            hasConfettiFired.current = true;
+          }
+          if (!shouldCelebrate) {
+            hasConfettiFired.current = false;
+          }
+        }, [calculations.roiPercent, isCalculationBlocked]);
+
+        const currencyLabel = currency === "RUB" ? "₽" : "$";
+
+        return (
+          <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-8 px-4 py-8 md:flex-row md:py-12">
+            <div className="md:w-2/5">
+              <header className="mb-8">
+                <span className="rounded-full bg-slate-800/60 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-sky-400">
+                  AI-тренер продаж
+                </span>
+                <h1 className="mt-4 text-3xl font-bold text-white md:text-4xl">
+                  AI-тренер продаж: посмотри, когда окупится у тебя
+                </h1>
+              </header>
+
+              <div className="glass-card rounded-3xl p-6 shadow-xl">
+                <form className="flex flex-col gap-5 text-sm">
+                  <div>
+                    <label className="mb-1 flex items-center justify-between text-sm font-medium text-slate-200" htmlFor="totalAgents">
+                      <span>Количество специалистов</span>
+                      <span className="text-xs text-slate-500">шт.</span>
+                    </label>
+                    <input
+                      id="totalAgents"
+                      type="number"
+                      min="1"
+                      value={totalAgents}
+                      onChange={(e) => setTotalAgents(numberInputValue(e.target.value, 1))}
+                      className="w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 flex items-center justify-between text-sm font-medium text-slate-200" htmlFor="newHiresPerMonth">
+                      <span>Новичков в месяц</span>
+                      <span className="text-xs text-slate-500">шт.</span>
+                    </label>
+                    <input
+                      id="newHiresPerMonth"
+                      type="number"
+                      min="0"
+                      value={newHiresPerMonth}
+                      onChange={(e) => setNewHiresPerMonth(numberInputValue(e.target.value, 0))}
+                      className="w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 flex items-center justify-between text-sm font-medium text-slate-200" htmlFor="revenuePerAgentPerMonth">
+                      <span>План на 1 специалиста</span>
+                      <span className="text-xs text-slate-500">/ мес</span>
+                    </label>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-500">
+                        {currencyLabel}
+                      </span>
+                      <input
+                        id="revenuePerAgentPerMonth"
+                        type="number"
+                        min="0"
+                        value={revenuePerAgentPerMonth}
+                        onChange={(e) => setRevenuePerAgentPerMonth(numberInputValue(e.target.value, 0))}
+                        className="w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 pl-8 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 flex items-center justify-between text-sm font-medium text-slate-200" htmlFor="rampUpCurrent">
+                      <span>Текущая длительность адаптации</span>
+                      <span className="text-xs text-slate-500">мес</span>
+                    </label>
+                    <input
+                      id="rampUpCurrent"
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      value={rampUpCurrent}
+                      onChange={(e) => setRampUpCurrent(numberInputValue(e.target.value, 0.1))}
+                      className="w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 flex items-center justify-between text-sm font-medium text-slate-200">Валюта расчёта</label>
+                    <div className="flex gap-3">
+                      {["RUB", "USD"].map((cur) => (
+                        <button
+                          type="button"
+                          key={cur}
+                          onClick={() => setCurrency(cur)}
+                          className={`flex-1 rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                            currency === cur
+                              ? "border-sky-400 bg-sky-500/20 text-sky-200"
+                              : "border-slate-700 bg-slate-800/70 text-slate-300 hover:border-slate-500"
+                          }`}
+                        >
+                          {cur}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvanced((prev) => !prev)}
+                      className="flex w-full items-center justify-between rounded-xl border border-slate-700 bg-slate-900/40 px-4 py-3 text-left text-sm font-semibold text-slate-200"
+                    >
+                      <span>Расширить</span>
+                      <span className="text-slate-500">{showAdvanced ? "▲" : "▼"}</span>
+                    </button>
+                    {showAdvanced && (
+                      <div className="mt-4 flex flex-col gap-4">
+                        <div>
+                          <label className="mb-1 flex items-center justify-between text-sm font-medium text-slate-200" htmlFor="supervisorHourlyRate">
+                            <span>Ставка РОПа/наставника</span>
+                            <span className="text-xs text-slate-500">/ час</span>
+                          </label>
+                          <div className="relative">
+                            <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-500">
+                              {currencyLabel}
+                            </span>
+                            <input
+                              id="supervisorHourlyRate"
+                              type="number"
+                              min="0"
+                              value={supervisorHourlyRate}
+                              onChange={(e) => setSupervisorHourlyRate(numberInputValue(e.target.value, 0))}
+                              className="w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 pl-8 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="mb-1 flex items-center justify-between text-sm font-medium text-slate-200" htmlFor="hoursPerNewHire">
+                            <span>Время РОПа на 1 новичка</span>
+                            <span className="text-xs text-slate-500">ч/мес</span>
+                          </label>
+                          <input
+                            id="hoursPerNewHire"
+                            type="number"
+                            min="0"
+                            value={hoursPerNewHire}
+                            onChange={(e) => setHoursPerNewHire(numberInputValue(e.target.value, 0))}
+                            className="w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-slate-100 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-3">
+                    <span className="mb-1 flex items-center justify-between text-sm font-medium text-slate-200">Сценарий</span>
+                    <ScenarioToggle value={scenario} onChange={setScenario} />
+                  </div>
+
+                  {isCalculationBlocked && (
+                    <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-100">
+                      Укажите хотя бы 1 специалиста, чтобы мы посчитали ROI.
+                    </div>
+                  )}
+                </form>
+              </div>
+            </div>
+
+            <div className="md:w-3/5">
+              <ResultCard
+                currency={currency}
+                roiPercent={isCalculationBlocked ? 0 : calculations.roiPercent}
+                totalBenefit={isCalculationBlocked ? 0 : calculations.totalBenefit}
+                serviceCost={isCalculationBlocked ? 0 : calculations.serviceCost}
+                extraRevenueFromRamp={isCalculationBlocked ? 0 : calculations.extraRevenueFromRamp}
+                extraRevenueFromUplift={isCalculationBlocked ? 0 : calculations.extraRevenueFromUplift}
+                savingsSupervisor={isCalculationBlocked ? 0 : calculations.savingsSupervisor}
+                paybackDays={isCalculationBlocked ? null : calculations.paybackDays}
+                scenarioKey={scenario}
+                rampUpWithAI={isCalculationBlocked ? rampUpCurrent : calculations.rampUpWithAI}
+                rampUpCurrent={rampUpCurrent}
+              />
+
+              <div className="mt-6 flex flex-col gap-4 md:flex-row">
+                <button
+                  onClick={() => {
+                    setIsModalOpen(true);
+                    setLeadSubmitted(false);
+                  }}
+                  className="flex-1 rounded-2xl bg-sky-500 px-6 py-4 text-base font-semibold text-white shadow-lg shadow-sky-500/30 transition hover:bg-sky-400"
+                >
+                  Получить детальный расчёт
+                </button>
+                <button
+                  onClick={() => {
+                    setIsModalOpen(true);
+                    setLeadSubmitted(false);
+                  }}
+                  className="flex-1 rounded-2xl border border-slate-600 bg-slate-900/60 px-6 py-4 text-base font-semibold text-slate-200 transition hover:border-slate-400 hover:text-white"
+                >
+                  Уточнить расчёт с экспертом
+                </button>
+              </div>
+            </div>
+
+            <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 md:hidden">
+              <div className="pointer-events-auto mx-auto mb-4 flex max-w-xl items-center justify-between gap-3 rounded-3xl bg-slate-900/90 px-4 py-3 shadow-lg shadow-sky-900/40">
+                <div>
+                  <p className="text-xs text-slate-400">ROI</p>
+                  <p className="text-lg font-bold text-emerald-300">
+                    {isCalculationBlocked
+                      ? "—"
+                      : `${Math.round(calculations.roiPercent)}%`}
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setIsModalOpen(true);
+                    setLeadSubmitted(false);
+                  }}
+                  className="rounded-2xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow"
+                >
+                  Получить детальный расчёт
+                </button>
+              </div>
+            </div>
+
+            <LeadFormModal
+              open={isModalOpen}
+              onClose={() => setIsModalOpen(false)}
+              onSubmit={() => setLeadSubmitted(true)}
+              submitted={leadSubmitted}
+              formData={formData}
+              setFormData={setFormData}
+            />
+          </div>
+        );
+      };
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
